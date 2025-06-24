@@ -31,12 +31,15 @@ class LogicLayer(torch.nn.Module):
         if implementation is None:
             if device == 'cuda':
                 implementation = 'cuda'
-            elif device in ['cpu', 'mps']:
+            elif device == 'mps':
+                implementation = 'mps'
+            elif device == 'cpu':
                 implementation = 'python'
 
         self.implementation = implementation
 
-        assert self.implementation in ['cuda', 'python'], self.implementation
+        assert self.implementation in ['cuda', 'python', 'mps'], self.implementation
+
         self.connections = connections
         assert self.connections in ['random', 'unique'], self.connections
         self.indices = self.get_connections(self.connections, device)
@@ -73,6 +76,8 @@ class LogicLayer(torch.nn.Module):
             return self.forward_cuda(x)
         elif self.implementation == 'python':
             return self.forward_python(x)
+        elif self.implementation == 'mps':
+            return self.forward_metal(x)
         else:
             raise ValueError(self.implementation)
 
@@ -109,6 +114,24 @@ class LogicLayer(torch.nn.Module):
         return x
 
     '''
+    
+    def forward_metal(self, x):
+        assert x.device.type == 'mps', f"Expected input on 'mps' device, got {x.device}"
+        assert x.shape[-1] == self.in_dim, f"Expected input dim {self.in_dim}, got {x.shape[-1]}"
+        
+        a, b = x[..., self.indices[0]], x[..., self.indices[1]]
+
+        if self.training:
+            weights = torch.nn.functional.softmax(self.weights, dim=-1)
+        else:
+            weights = torch.nn.functional.one_hot(self.weights.argmax(-1), 16).to(torch.float32)
+
+        # Ensure weights are on same device as input
+        weights = weights.to(x.device)
+
+        x = bin_op_s(a, b, weights)
+        return x
+
 
     def forward_metal_eval(self, x: PackBitsTensor):
         assert not self.training
